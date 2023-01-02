@@ -2,13 +2,16 @@ import os
 import time
 import argparse
 from datetime import datetime
+import multiprocessing as mp
+from functools import partial
+
 import numpy as np
 import networkx as nx
 import pandas as pd
 import gudhi as gd
 
 from innovationtopology.db_tools import MAGDB
-from innovationtopology.utils import save_lower_distance_matrix, save_nodes, threshold_edge_probability
+from innovationtopology.utils import save_lower_distance_matrix, save_nodes, threshold_edge_probability, unpack_gudhi_generators, mag_date_transform
 from innovationtopology.config import mag
 
 start = mag['start']
@@ -19,7 +22,7 @@ subjects = mag['subjects']
 
 score_min = mag['default_score_min']
 edge_probability_threshold = mag['default_edge_probability_threshold']
-gen_dims = [0,1,2]
+gen_dims = [0,1]
 close_holes = True
 
 # max homology dimension (compute up to betti_{})
@@ -30,6 +33,8 @@ savestring = '{}_{}_ep{}_dim{}_{}_{}.csv'
 saveloc = '../data/temporal_holes-fields_of_study'
 # {score_min}_{subject}_{level}.csv
 betti_savestring = '{}_ep{}_{}_{}.csv'
+
+ncores = mp.cpu_count()-1
 
 def run(score_min, subjects, levels, save_for_ripser=False, edge_probability_threshold=edge_probability_threshold):
 
@@ -130,69 +135,22 @@ def run(score_min, subjects, levels, save_for_ripser=False, edge_probability_thr
             # save persistence diagram to file
             simplex_tree.write_persistence_diagram(os.path.join(saveloc,'diagrams',betti_savestring.format(score_min,edge_probability_threshold,subject,level)))
 
+            df_all = df[['PaperId','Date','CitationCount']]
+
             gens = simplex_tree.flag_persistence_generators()
+
+            date_transform = partial(mag_date_transform, mn, mx)
 
             for gen_dim in gen_dims:
 
-                # are there non-trivial holes in this dimension
-                if gen_dim <= len(gens[1])-1:
-                    # create array of node indices and their lifetimes
-                    # dimensions are as follows:
-                    # 0: first birth vertex index
-                    # 1: second birth vertex index
-                    # 2: first death vertex index
-                    # 3: second death vertex index
-                    # 4: lifetime of hole
-                    x = np.empty((gens[1][gen_dim].shape[0],5))
-                    for i in range(gens[1][gen_dim].shape[0]):
-                        r = gens[1][gen_dim][i]
-                        x[i,:4] = r[:4]
-                        b = g[nodes[r[0]]][nodes[r[1]]]['weight']
-                        d = g[nodes[r[2]]][nodes[r[3]]]['weight']
-                        x[i,4] = d - b
+                print(f'Reporting subject {subject}, level {level}, dimension {gen_dim+1}')
+                df_res = unpack_gudhi_generators(gens, gen_dim, g, nodes, date_transform, df, df_all, 
+                                                concept_a_col='FieldOfStudyA', concept_b_col='FieldOfStudyB', record_id_col='PaperId', 
+                                                ncores=ncores)
 
-                    x[np.argsort(x[:, 4])]
+                filename = savestring.format(prefix, score_min, edge_probability_threshold, gen_dim+1, subject, level)
+                df_res.to_csv(os.path.join(saveloc,filename), index=False)
 
-                    # construct dataframe of hole-closing papers and their associated features
-                    # construct dataframe of hole-closing papers and their associated features
-                    res = []
-                    sk1 = 'vd1'
-                    sk2 = 'vd2'
-                    dt = 'death_date'
-                    for i in range(x.shape[0]):
-                        if i % 100 == 0: print('Subject: {}, Level: {}, Dim: {}, {}/{}'.format(subject, level, gen_dim+1, i, x.shape[0]))
-                        r = {}
-                        r['vb1'] = nodes[int(x[i,0])]
-                        r['vb2'] = nodes[int(x[i,1])]
-                        r['vd1'] = nodes[int(x[i,2])]
-                        r['vd2'] = nodes[int(x[i,3])]
-                        r['lifetime'] = x[i,4]
-
-                        r['birth_date'] = datetime.fromtimestamp(g[r['vb1']][r['vb2']]['weight']*mx - np.abs(mn)-1).date()
-                        r['birth_point'] = g[r['vb1']][r['vb2']]['weight']
-                        r['death_date'] = datetime.fromtimestamp(g[r['vd1']][r['vd2']]['weight']*mx - np.abs(mn)-1).date()
-                        r['death_point'] = g[r['vd1']][r['vd2']]['weight']
-
-                        es = [(e[0],e[1]) for e in g.edges(data=True) if e[2]['weight'] < r['death_point']]
-                        h = g.edge_subgraph(es)
-                        try:
-                            r['shortest_path_before_death'] = nx.shortest_path_length(h, source=r['vd1'], target=r['vd2'])
-                        except (nx.exception.NodeNotFound, nx.exception.NetworkXNoPath):
-                            r['shortest_path_before_death'] = np.nan
-
-                        rows = df[((df['FieldOfStudyA'] == r[sk1]) & (df['FieldOfStudyB'] == r[sk2])) | ((df['FieldOfStudyB'] == r[sk1]) & (df['FieldOfStudyA'] == r[sk2]))][['PaperId','Date','CitationCount']].copy() 
-
-                        for k,v in r.items():
-                            rows[k] = v
-                        res.append(rows)
-
-                    df_res = pd.concat(res, ignore_index=True)
-
-                    filename = savestring.format(prefix, score_min, edge_probability_threshold, gen_dim+1, subject, level)
-                    df_res.to_csv(os.path.join(saveloc,filename), index=False)
-
-                else:
-                    print('Gen Dim: {} trivial'.format(gen_dim))
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='compute temporal holes for MAG')
@@ -208,4 +166,4 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
     levels = [int(l) for l in args.levels]
-    run(args.score_min, args.subjects, levels, save_for_ripser=args.save_for_ripser, edge_probability_threshold=edge_probability_threshold)
+    run(args.score_min, args.subjects, levels, save_for_ripser=args.save_for_ripser, edge_probability_threshold=args.edge_probability_threshold)

@@ -28,6 +28,9 @@ def map_reps_to_pairs(subject, level, edge_probability_threshold):
     node_loc = os.path.join(dataloc, 'nodes', f'{score_min}_ep{edge_probability_threshold}_{subject}_{level}.csv')
 
     ldm_fname = os.path.join(dataloc, 'spdist', f'{score_min}_ep{edge_probability_threshold}_{subject}_{level}.lower_distance_matrix')
+    if not os.path.exists(ldm_fname) or not os.path.exists(rep_loc):
+        print(f'skipping {subject}, level {level}; no network or representatives data')
+        return None
     with open(ldm_fname, 'r') as f:
         reader = csv.reader(f, delimiter=',')
         nrows = sum(1 for row in reader) + 1
@@ -38,7 +41,7 @@ def map_reps_to_pairs(subject, level, edge_probability_threshold):
             ldm[i+1,:i+1] = line
     ldm = ldm + ldm.T
 
-    nodes = pd.read_csv(node_loc, header=None)
+    nodes = pd.read_csv(node_loc)
     nodes = nodes['0'].to_dict()
 
     # connect to mysql server and load the entire dataset (will be used as null distribution)
@@ -92,7 +95,6 @@ def map_reps_to_pairs(subject, level, edge_probability_threshold):
     full_df_csv.to_csv(saveloc)
 
 if __name__ == "__main__":
-
     for subject in subjects:
         for level in levels:
             print(f'running subject {subject}, level {level}')
